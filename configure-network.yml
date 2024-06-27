@@ -1,12 +1,21 @@
 ---
 - name: Configure network devices
-  hosts: all
-  gather_facts: no
+  hosts: network_devices
   tasks:
-    - name: Configure hostname
-      shell: echo {{ inventory_hostname }} > /etc/hostname && hostname {{ inventory_hostname }}
+    - name: Set hostname
+      command: echo "{{ inventory_hostname }}" > /etc/hostname
+
+    - name: Update /etc/hosts
+      command: |
+        echo "127.0.1.1 {{ inventory_hostname }}" >> /etc/hosts
+
+    - name: Remove existing IP address
+      command: ip addr del {{ ip_address }}/24 dev eth0
+      ignore_errors: yes
+
     - name: Configure IP address
-      command: ip addr add {{ ip_address }} dev eth0
+      command: ip addr add {{ ip_address }}/24 dev eth0
+
     - name: Bring up interface
       command: ip link set eth0 up
 
