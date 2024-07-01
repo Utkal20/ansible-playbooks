@@ -11,6 +11,7 @@ A collection of Ansible playbooks and instructions for configuring network devic
 - [Addressing Expectations](#addressing-expectations)
 - [Detailed Setup Instructions](#detailed-setup-instructions)
   - [Prerequisites](#prerequisites)
+  - [Deploying K3s and AWX Operator](#deploying-k3s-and-awx-operator)
   - [Setting Up Docker Containers for Network Configuration](#setting-up-docker-containers-for-network-configuration)
   - [Creating Ansible Inventory and Playbooks](#creating-ansible-inventory-and-playbooks)
   - [Running Playbooks](#running-playbooks)
@@ -82,29 +83,155 @@ If the expectation is to configure network devices directly through a UI without
 - **Kubernetes**: Ensure Kubernetes is installed and running (e.g., using Minikube or k3s).
 - **AWX**: Deployed on your Kubernetes cluster.
 
+### Deploying K3s and AWX Operator
+
+1. **Deploy K3s**
+
+    Install K3s:
+    ```bash
+    curl -sfL https://get.k3s.io | sh -
+    ```
+
+    Validate the installation:
+    ```bash
+    kubectl version
+    ```
+
+    If logged in with a non-root account (e.g., `adminusr`), change the ownership of the k3s configuration file:
+    ```bash
+    sudo chown adminusr:adminusr /etc/rancher/k3s/k3s.yaml
+    ```
+
+    List the nodes:
+    ```bash
+    kubectl get nodes
+    ```
+
+2. **Deploy Kustomize and AWX Operator**
+
+    Create the `kustomization.yml` file in your home directory:
+    ```yaml
+    apiVersion: kustomize.config.k8s.io/v1beta1
+    kind: Kustomization
+    resources:
+      - github.com/ansible/awx-operator/config/default?ref=2.5.3
+    images:
+      - name: quay.io/ansible/awx-operator
+        newTag: 2.5.3
+    namespace: awx
+    ```
+
+    Initiate the build process:
+    ```bash
+    kustomize build . | kubectl apply -f -
+    ```
+
+    Validate the deployment of the required pods:
+    ```bash
+    kubectl get pods -n awx
+    ```
+
+3. **Create `awx-demo.yml` and Expose Application**
+
+    Create the `awx-demo.yml` file:
+    ```yaml
+    apiVersion: awx.ansible.com/v1beta1
+    kind: AWX
+    metadata:
+      name: awx-demo
+    spec:
+      service_type: nodeport
+    ```
+
+    Modify the `kustomization.yml`:
+    ```yaml
+    apiVersion: kustomize.config.k8s.io/v1beta1
+    kind: Kustomization
+    resources:
+      - github.com/ansible/awx-operator/config/default?ref=2.5.3
+      - awx-demo.yml
+    images:
+      - name: quay.io/ansible/awx-operator
+        newTag: 2.5.3
+    namespace: awx
+    ```
+
+    Run the deployment again:
+    ```bash
+    kustomize build . | kubectl apply -f -
+    ```
+
+4. **Access AWX Application**
+
+    Find the port number to access the application:
+    ```bash
+    kubectl get svc -n awx
+    ```
+
+    Fetch the secret password for the admin user:
+    ```bash
+    kubectl get secret awx-demo-admin-password -o jsonpath="{.data.password}" -n awx | base64 --decode | more
+    ```
+
+    Access AWX from the browser using the VM IP and port number:
+    ```
+    https://<vm-ip>:<port-number>
+    ```
+
+    Login with username `admin` and the password retrieved from the previous step.
+
 ### Setting Up Docker Containers for Network Configuration
 
-1. **Create a Docker Network**
+1. **Build the Custom Docker Image**
+
+    Create a Dockerfile with the following content:
+    ```Dockerfile
+    # Use the official Python image
+    FROM python:3.10-slim
+
+    # Install necessary packages
+    RUN apt-get update && apt-get install -y \
+        openssh-server \
+        iproute2 \
+        sshpass \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install Ansible and six
+    RUN pip install ansible six
+
+    # Configure SSH
+    RUN mkdir /var/run/sshd && \
+        echo 'root:password' | chpasswd && \
+        sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+        sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+        echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && \
+        echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
+
+    # Create SSH directory and generate keys
+    RUN mkdir -p /root/.ssh && \
+        ssh-keygen -A
+
+    # Expose SSH port
+    EXPOSE 22
+
+    # Start SSH service
+    CMD ["/usr/sbin/sshd", "-D"]
+    ```
+
+    Build the Docker image:
+    ```bash
+    docker build -t ansible-network-config .
+    ```
+
+2. **Create a Docker Network**
     ```bash
     docker network create my-net
     ```
 
-2. **Run Docker Containers**
+3. **Run Docker Containers**
     ```bash
-    docker run -d --name ansible1 --network my-net --privileged -p 2224:22 ubuntu
-    docker run -d --name ansible2 --network my-net --privileged -p 2225:22 ubuntu
-    ```
-
-3. **Install Necessary Packages**
-    ```bash
-    docker exec -it ansible1 bash -c "apt-get update && apt-get install -y openssh-server iproute2"
-    docker exec -it ansible2 bash -c "apt-get update && apt-get install -y openssh-server iproute2"
-    ```
-
-4. **Start SSH Service**
-    ```bash
-    docker exec -it ansible1 bash -c "service ssh start"
-    docker exec -it ansible2 bash -c "service ssh start"
+    docker run -d --name ansible1 --network my-net --privileged -p 2224:22 ansible-network-config
+    docker run -d --name ansible2 --network my-net --privileged -p 2225:22 ansible-network-config
     ```
 
 ### Creating Ansible Inventory and Playbooks
@@ -305,4 +432,3 @@ If the expectation is to configure network devices directly through a UI without
 ## Conclusion
 
 AWX provides a powerful and flexible platform for automating IT processes using Ansible playbooks. While it may not support direct UI-based configuration of network devices, it offers extensive capabilities for managing and executing playbooks, making it a valuable tool for network automation.
-
